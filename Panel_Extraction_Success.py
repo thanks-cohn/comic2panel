@@ -398,6 +398,59 @@ def extract_paddle_text_lines(arr: np.ndarray, page_number: int, engine: Any, im
     return out
 
 
+
+def meaningful_text_char_count(lines: list[TextLine]) -> int:
+    return sum(len(line.text.strip()) for line in lines if line.text and line.text.strip())
+
+
+def extract_text_lines_smart(
+    *,
+    source_path: Path,
+    page_number: int,
+    rendered_page: np.ndarray,
+    rendered_page_path: Path | None,
+    is_pdf: bool,
+    pdf_zoom: float,
+    ocr_engine: Any | None,
+    force_ocr: bool = False,
+    min_native_chars: int = 8,
+) -> list[TextLine]:
+    """
+    TEXT PRESENCE ROUTER.
+
+    Rule:
+      1. If OCR is forced, OCR the rendered page.
+      2. If this is a PDF, try native PDF text first.
+      3. If native text is missing/empty/useless, OCR the rendered page.
+      4. If no OCR engine exists, return no text.
+
+    This keeps clean PDF text clean, and only pays OCR cost when needed.
+    """
+    if force_ocr:
+        if ocr_engine is None:
+            return []
+        return extract_paddle_text_lines(
+            rendered_page,
+            page_number,
+            ocr_engine,
+            image_path=rendered_page_path,
+        )
+
+    if is_pdf:
+        native = extract_pdf_text_lines(source_path, page_number, pdf_zoom)
+        if meaningful_text_char_count(native) >= min_native_chars:
+            return native
+
+    if ocr_engine is not None:
+        return extract_paddle_text_lines(
+            rendered_page,
+            page_number,
+            ocr_engine,
+            image_path=rendered_page_path,
+        )
+
+    return []
+
 def find_runs(mask_1d: np.ndarray, min_len: int) -> list[tuple[int, int, float]]:
     runs = []
     start = None
@@ -705,25 +758,17 @@ def process_file(path: Path, out_root: Path, pdf_zoom: float, embed_panel_crops:
         page_path = pages_dir / f"page_{page_no:04d}.png"
         page_saved = save_png(arr, page_path)
         panels, gutters = detect_panel_regions(arr, page_no, panel_cfg, manual=manual)
-        pdf_lines = extract_pdf_text_lines(path, page_no, pdf_zoom) if is_pdf else []
-        native_chars = sum(len(t.text.strip()) for t in pdf_lines)
-        native_text_is_weak = native_chars < native_text_min_chars
-        ocr_lines: list[TextLine] = []
-
-        should_run_ocr = engine is not None and (prefer_ocr or native_text_is_weak or not pdf_lines or not is_pdf)
-        if should_run_ocr:
-            reason = "prefer_ocr" if prefer_ocr else (f"native_text_weak chars={native_chars}" if native_text_is_weak else "image_or_no_native_text")
-            print_progress(f"file {file_index}/{file_total} page", page_no, total_pages, f"running PaddleOCR ({reason})")
-            ocr_lines = extract_paddle_text_lines(arr, page_no, engine, image_path=page_path, min_confidence=min_ocr_confidence)
-
-        if prefer_ocr and ocr_lines:
-            text_lines = ocr_lines
-        elif pdf_lines and not native_text_is_weak:
-            text_lines = pdf_lines
-        elif ocr_lines:
-            text_lines = ocr_lines
-        else:
-            text_lines = pdf_lines
+        text_lines = extract_text_lines_smart(
+            source_path=path,
+            page_number=page_no,
+            rendered_page=arr,
+            rendered_page_path=page_path,
+            is_pdf=is_pdf,
+            pdf_zoom=pdf_zoom,
+            ocr_engine=engine,
+            force_ocr=prefer_ocr,
+            min_native_chars=native_text_min_chars,
+        )
 
         if require_text_layer and not text_lines:
             print_progress(f"file {file_index}/{file_total} page", page_no, total_pages, "WARNING text_lines=0; Paddle could not see text or OCR is unavailable")
