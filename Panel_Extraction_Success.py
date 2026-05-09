@@ -409,11 +409,62 @@ def text_route_for_lines(lines: list[TextLine], force_ocr: bool = False) -> str:
     sources = {line.source for line in lines}
     if force_ocr:
         return "forced_ocr"
+    if "paddle_panel_ocr" in sources:
+        return "paddle_panel_ocr"
     if any(src.startswith("paddle") for src in sources):
-        return "paddle_ocr"
+        return "paddle_page_ocr"
     if "pdf_native" in sources:
         return "pdf_native"
     return "unknown"
+
+
+
+def extract_panel_ocr_text_lines(
+    *,
+    rendered_page: np.ndarray,
+    page_number: int,
+    panels: list[PanelRegion],
+    ocr_engine: Any,
+    min_confidence: float = 0.20,
+) -> list[TextLine]:
+    """
+    OCR each detected panel separately, then remap panel-local OCR boxes
+    back into full rendered-page coordinates.
+
+    This is usually much better for comics than OCRing the whole page.
+    """
+    out: list[TextLine] = []
+
+    for panel in panels:
+        crop = crop_region(rendered_page, panel.bbox)
+        if crop is None:
+            continue
+
+        local_lines = extract_paddle_text_lines(
+            crop,
+            page_number,
+            ocr_engine,
+            image_path=None,
+            min_confidence=min_confidence,
+        )
+
+        px0, py0, _, _ = panel.bbox
+
+        for line in local_lines:
+            x0, y0, x1, y1 = line.bbox
+            line.id = f"P{page_number}_{panel.id}_OCR_L{len(out) + 1}"
+            line.bbox = [
+                float(x0 + px0),
+                float(y0 + py0),
+                float(x1 + px0),
+                float(y1 + py0),
+            ]
+            line.source = "paddle_panel_ocr"
+            line.panel_id = panel.id
+            line.reading_order = len(out) + 1
+            out.append(line)
+
+    return out
 
 
 def extract_text_lines_smart(
@@ -425,8 +476,10 @@ def extract_text_lines_smart(
     is_pdf: bool,
     pdf_zoom: float,
     ocr_engine: Any | None,
+    panels: list[PanelRegion] | None = None,
     force_ocr: bool = False,
     min_native_chars: int = 8,
+    min_ocr_confidence: float = 0.20,
 ) -> list[TextLine]:
     """
     TEXT PRESENCE ROUTER.
@@ -442,11 +495,22 @@ def extract_text_lines_smart(
     if force_ocr:
         if ocr_engine is None:
             return []
+        if panels:
+            panel_lines = extract_panel_ocr_text_lines(
+                rendered_page=rendered_page,
+                page_number=page_number,
+                panels=panels,
+                ocr_engine=ocr_engine,
+                min_confidence=min_ocr_confidence,
+            )
+            if panel_lines:
+                return panel_lines
         return extract_paddle_text_lines(
             rendered_page,
             page_number,
             ocr_engine,
             image_path=rendered_page_path,
+            min_confidence=min_ocr_confidence,
         )
 
     if is_pdf:
@@ -455,11 +519,23 @@ def extract_text_lines_smart(
             return native
 
     if ocr_engine is not None:
+        if panels:
+            panel_lines = extract_panel_ocr_text_lines(
+                rendered_page=rendered_page,
+                page_number=page_number,
+                panels=panels,
+                ocr_engine=ocr_engine,
+                min_confidence=min_ocr_confidence,
+            )
+            if panel_lines:
+                return panel_lines
+
         return extract_paddle_text_lines(
             rendered_page,
             page_number,
             ocr_engine,
             image_path=rendered_page_path,
+            min_confidence=min_ocr_confidence,
         )
 
     return []
@@ -779,8 +855,10 @@ def process_file(path: Path, out_root: Path, pdf_zoom: float, embed_panel_crops:
             is_pdf=is_pdf,
             pdf_zoom=pdf_zoom,
             ocr_engine=engine,
+            panels=panels,
             force_ocr=prefer_ocr,
             min_native_chars=native_text_min_chars,
+            min_ocr_confidence=min_ocr_confidence,
         )
 
         if require_text_layer and not text_lines:
