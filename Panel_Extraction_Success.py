@@ -646,7 +646,10 @@ def svg_from_spatial_page(page_record: dict[str, Any], embed_panel_crops: bool, 
         if embed_panel_crops and panel.get("crop_path"):
             out.append(f'<image id="{pid}_image_asset" class="panel-image-asset" href="{path_for_svg(panel.get("crop_path"))}" x="{x0}" y="{y0}" width="{x1-x0}" height="{y1-y0}" opacity="1.0"/>')
         out.append(f'<polygon id="{pid}_bounds" class="panel-bounds-object" points="{pts}" fill="none" stroke="red" stroke-width="3" opacity="0.95"/>')
-        out.append(f'<text id="{pid}_label" class="panel-label-object" x="{x0}" y="{max(14, y0 - 6)}" font-family="Arial" font-size="14" fill="red">{html.escape(panel.get("name", pid))}</text>')
+        label_text = html.escape(str(panel.get("reading_order", panel.get("name", pid))))
+        label_x = x0 + 12
+        label_y = y0 + 24
+        out.append(f'<text id="{pid}_label" class="panel-label-object comica-editable-panel-number" data-comica-field="reading_order" x="{label_x}" y="{label_y}" font-family="Arial" font-size="18" font-weight="bold" fill="red">{label_text}</text>')
         out.append('</g>')
     out.append('</g>')
     out.append('<g id="gutter_objects" class="gutter-objects">')
