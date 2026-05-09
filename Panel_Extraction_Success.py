@@ -528,15 +528,22 @@ def extract_text_lines_smart(
                 min_confidence=min_ocr_confidence,
             )
             if panel_lines:
+                print(f"[router] page={page_number} using panel OCR lines={len(panel_lines)}")
                 return panel_lines
 
-        return extract_paddle_text_lines(
+            print(f"[router] page={page_number} panel OCR returned 0 lines; escalating to whole-page OCR")
+
+        whole_page_lines = extract_paddle_text_lines(
             rendered_page,
             page_number,
             ocr_engine,
             image_path=rendered_page_path,
             min_confidence=min_ocr_confidence,
         )
+
+        print(f"[router] page={page_number} whole-page OCR lines={len(whole_page_lines)}")
+
+        return whole_page_lines
 
     return []
 
