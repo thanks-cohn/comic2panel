@@ -111,6 +111,7 @@ class GutterBand:
 class PanelDetectionConfig:
     profile: str = "balanced"          # strict, balanced, loose, recall, comic
     panel_source: str = "fallback"     # contours, gutters, fallback, hybrid
+    reading_direction: str = "ltr"     # ltr = western, rtl = manga/japanese
     max_area_ratio: float = 0.94
     merge_iou: float = 0.82
     min_rectangularity: float = 0.55
@@ -542,6 +543,71 @@ def merge_candidates(candidates: list[dict[str, Any]], cfg: PanelDetectionConfig
     return sorted(kept, key=lambda r: (r["bbox"][1], r["bbox"][0]))
 
 
+
+def sort_panel_candidates_for_reading_order(candidates: list[dict[str, Any]], cfg: PanelDetectionConfig) -> list[dict[str, Any]]:
+    """
+    Sort panels by reading grammar.
+
+    ltr: western-style rows, top-to-bottom, left-to-right.
+    rtl: manga/japanese-style rows, top-to-bottom, right-to-left.
+
+    Uses vertical overlap instead of center-Y alone, because comic panels often
+    share a row while having uneven heights.
+    """
+    if not candidates:
+        return candidates
+
+    direction = getattr(cfg, "reading_direction", "ltr").lower().strip()
+    if direction not in ("ltr", "rtl"):
+        direction = "ltr"
+
+    def bbox(c: dict[str, Any]) -> list[float]:
+        return c.get("bbox", [0, 0, 0, 0])
+
+    def x_center(c: dict[str, Any]) -> float:
+        x0, y0, x1, y1 = bbox(c)
+        return (x0 + x1) / 2.0
+
+    def y_top(c: dict[str, Any]) -> float:
+        return bbox(c)[1]
+
+    def vertical_overlap_ratio(a: dict[str, Any], b: dict[str, Any]) -> float:
+        ax0, ay0, ax1, ay1 = bbox(a)
+        bx0, by0, bx1, by1 = bbox(b)
+
+        overlap = max(0.0, min(ay1, by1) - max(ay0, by0))
+        a_h = max(1.0, ay1 - ay0)
+        b_h = max(1.0, by1 - by0)
+
+        return overlap / min(a_h, b_h)
+
+    rows: list[list[dict[str, Any]]] = []
+
+    for cand in sorted(candidates, key=lambda c: (y_top(c), bbox(c)[0])):
+        best_row: list[dict[str, Any]] | None = None
+        best_score = 0.0
+
+        for row in rows:
+            score = max(vertical_overlap_ratio(cand, existing) for existing in row)
+            if score > best_score:
+                best_score = score
+                best_row = row
+
+        if best_row is not None and best_score >= 0.35:
+            best_row.append(cand)
+        else:
+            rows.append([cand])
+
+    rows.sort(key=lambda row: min(y_top(c) for c in row))
+
+    ordered: list[dict[str, Any]] = []
+    for row in rows:
+        row.sort(key=x_center, reverse=(direction == "rtl"))
+        ordered.extend(row)
+
+    return ordered
+
+
 def name_panel(index: int, total: int) -> str:
     if total == 3:
         return ["top", "middle", "bottom"][index - 1]
@@ -592,6 +658,7 @@ def detect_panel_regions(arr: np.ndarray, page_no: int, cfg: PanelDetectionConfi
             pad = max(2.0, min(w, h) * 0.004)
             bbox = [pad, pad, float(w) - pad, float(h) - pad]
             merged = [{"bbox": bbox, "polygon": bbox_xyxy_to_corners(bbox), "area": bbox_area(bbox), "confidence": 0.25, "source": "whole_page_rescue"}]
+    merged = sort_panel_candidates_for_reading_order(merged, cfg)
     panels: list[PanelRegion] = []
     for i, cand in enumerate(merged, start=1):
         name = cand.get("manual_name") or name_panel(i, len(merged))
@@ -797,6 +864,7 @@ def main() -> None:
     parser.add_argument("--pdf-zoom", type=float, default=2.0, help="PDF render zoom. Try 1.5, 2, 3, or 4; different zooms produce different panel results")
     parser.add_argument("--panel-profile", default="balanced", choices=["strict", "balanced", "loose", "recall", "comic"], help="strict=fewer/cleaner, balanced=FileMonster-like, loose/recall=more aggressive")
     parser.add_argument("--panel-source", default="fallback", choices=["contours", "gutters", "fallback", "hybrid"], help="contours=FileMonster-style, gutters=gutter grid only, fallback=contours first, hybrid=both")
+    parser.add_argument("--reading-direction", choices=["ltr", "rtl"], default="ltr", help="Panel reading order: ltr for western comics, rtl for manga/japanese layouts.")
     parser.add_argument("--max-area-ratio", type=float, default=0.94)
     parser.add_argument("--merge-iou", type=float, default=0.82)
     parser.add_argument("--min-rectangularity", type=float, default=0.55)
