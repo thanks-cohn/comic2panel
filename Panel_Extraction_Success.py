@@ -795,7 +795,10 @@ def svg_from_spatial_page(page_record: dict[str, Any], embed_panel_crops: bool, 
         if embed_panel_crops and panel.get("crop_path"):
             out.append(f'<image id="{pid}_image_asset" class="panel-image-asset" href="{path_for_svg(panel.get("crop_path"))}" x="{x0}" y="{y0}" width="{x1-x0}" height="{y1-y0}" opacity="1.0"/>')
         out.append(f'<polygon id="{pid}_bounds" class="panel-bounds-object" points="{pts}" fill="none" stroke="red" stroke-width="3" opacity="0.95"/>')
-        out.append(f'<text id="{pid}_label" class="panel-label-object" x="{x0}" y="{max(14, y0 - 6)}" font-family="Arial" font-size="14" fill="red">{html.escape(panel.get("name", pid))}</text>')
+        label_x = x0 + max(18, (x1 - x0) * 0.035)
+        label_y = y0 + max(34, (y1 - y0) * 0.060)
+        label_font_size = max(24, min(44, (y1 - y0) * 0.055))
+        out.append(f'<text id="{pid}_label" class="panel-label-object" x="{label_x}" y="{label_y}" font-family="Arial, sans-serif" font-size="{label_font_size}" font-weight="700" fill="red" stroke="white" stroke-width="3" paint-order="stroke fill">{html.escape(panel.get("name", pid))}</text>')
         out.append('</g>')
     out.append('</g>')
     # Gutters intentionally omitted from SVG rendering.
