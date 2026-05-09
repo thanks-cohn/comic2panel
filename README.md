@@ -171,24 +171,25 @@ out/
 ------------------------------------------------------------
 
 Basic:
-
+```text
   python comic2panel.py input.pdf -o out
 
+```
 More control:
-
+```text
   python comic2panel.py input.pdf -o out --panel-profile balanced
   python comic2panel.py input.pdf -o out --panel-source hybrid
   python comic2panel.py input.pdf -o out --ocr paddle
   python comic2panel.py input.pdf -o out --prefer-ocr
-
+```
 Image folders:
-
+```text
   python comic2panel.py ./images -o out --ocr paddle
-
+```
 Manual panel override:
-
+```text
   python comic2panel.py input.pdf -o out --manual-panels panels.json
-
+```
 ------------------------------------------------------------
  CURRENT STATE
 ------------------------------------------------------------
