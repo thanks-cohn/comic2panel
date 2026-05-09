@@ -798,14 +798,8 @@ def svg_from_spatial_page(page_record: dict[str, Any], embed_panel_crops: bool, 
         out.append(f'<text id="{pid}_label" class="panel-label-object" x="{x0}" y="{max(14, y0 - 6)}" font-family="Arial" font-size="14" fill="red">{html.escape(panel.get("name", pid))}</text>')
         out.append('</g>')
     out.append('</g>')
-    out.append('<g id="gutter_objects" class="gutter-objects">')
-    for g in page_record.get("gutters", []):
-        x0, y0, x1, y1 = g["bbox"]; gid = html.escape(g["id"])
-        out.append(f'<g id="{gid}" class="gutter-object" data-orientation="{html.escape(g.get("orientation", ""))}">')
-        out.append(f'<title>{html.escape(json.dumps(g, ensure_ascii=False))}</title>')
-        out.append(f'<rect id="{gid}_rect" x="{x0}" y="{y0}" width="{x1-x0}" height="{y1-y0}" fill="yellow" opacity="0.18"/>')
-        out.append('</g>')
-    out.append('</g>')
+    # Gutters intentionally omitted from SVG rendering.
+    # They remain available in JSON/manifests for structural analysis.
     out.append('<g id="text_line_objects" class="text-line-objects">')
     for line in page_record.get("text_lines", []):
         if not line.get("text"): continue
