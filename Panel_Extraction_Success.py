@@ -403,6 +403,19 @@ def meaningful_text_char_count(lines: list[TextLine]) -> int:
     return sum(len(line.text.strip()) for line in lines if line.text and line.text.strip())
 
 
+def text_route_for_lines(lines: list[TextLine], force_ocr: bool = False) -> str:
+    if not lines:
+        return "none"
+    sources = {line.source for line in lines}
+    if force_ocr:
+        return "forced_ocr"
+    if any(src.startswith("paddle") for src in sources):
+        return "paddle_ocr"
+    if "pdf_native" in sources:
+        return "pdf_native"
+    return "unknown"
+
+
 def extract_text_lines_smart(
     *,
     source_path: Path,
@@ -773,6 +786,7 @@ def process_file(path: Path, out_root: Path, pdf_zoom: float, embed_panel_crops:
         if require_text_layer and not text_lines:
             print_progress(f"file {file_index}/{file_total} page", page_no, total_pages, "WARNING text_lines=0; Paddle could not see text or OCR is unavailable")
 
+        text_route = text_route_for_lines(text_lines, force_ocr=prefer_ocr)
         assign_text_to_panels(text_lines, panels)
         for p in panels:
             crop = crop_region(arr, p.bbox)
@@ -793,6 +807,7 @@ def process_file(path: Path, out_root: Path, pdf_zoom: float, embed_panel_crops:
             "assets": {"page_image": page_saved},
             "panels": [asdict(p) for p in panels],
             "gutters": [asdict(g) for g in gutters],
+            "text_route": text_route,
             "text_lines": [asdict(t) for t in text_lines],
             "relationships": [{"relationship_type": "text_inside_panel", "text_id": t.id, "panel_id": t.panel_id, "text": t.text, "bbox": t.bbox} for t in text_lines],
         }
@@ -805,7 +820,7 @@ def process_file(path: Path, out_root: Path, pdf_zoom: float, embed_panel_crops:
         page_record["svg"] = str(svg_path)
         write_json(page_json_path, page_record)
         page_records.append({**page_record, "page_image_b64": None})
-        print_progress(f"file {file_index}/{file_total} page", page_no, total_pages, f"panels={len(panels)} gutters={len(gutters)} text_lines={len(text_lines)} svg={svg_path.name}")
+        print_progress(f"file {file_index}/{file_total} page", page_no, total_pages, f"panels={len(panels)} gutters={len(gutters)} text_route={text_route} text_lines={len(text_lines)} svg={svg_path.name}")
     manifest = {
         "schema": {"name": "comica-extract", "version": SCHEMA_VERSION},
         "tool": {"name": TOOL_NAME, "version": TOOL_VERSION},
