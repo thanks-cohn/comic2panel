@@ -724,7 +724,7 @@ def svg_from_spatial_page(page_record: dict[str, Any], embed_panel_crops: bool, 
         x0, y0, x1, y1 = g["bbox"]; gid = html.escape(g["id"])
         out.append(f'<g id="{gid}" class="gutter-object" data-orientation="{html.escape(g.get("orientation", ""))}">')
         out.append(f'<title>{html.escape(json.dumps(g, ensure_ascii=False))}</title>')
-        out.append(f'<rect id="{gid}_rect" x="{x0}" y="{y0}" width="{x1-x0}" height="{y1-y0}" fill="yellow" opacity="0.18"/>')
+        out.append(f'<rect id="{gid}_rect" x="{x0}" y="{y0}" width="{x1-x0}" height="{y1-y0}" fill="none" opacity="0.18"/>')
         out.append('</g>')
     out.append('</g>')
     out.append('<g id="text_line_objects" class="text-line-objects">')
