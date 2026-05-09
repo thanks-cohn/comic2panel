@@ -111,6 +111,7 @@ class GutterBand:
 class PanelDetectionConfig:
     profile: str = "balanced"          # strict, balanced, loose, recall, comic
     panel_source: str = "fallback"     # contours, gutters, fallback, hybrid
+    reading_direction: str = "ltr"     # ltr or rtl
     max_area_ratio: float = 0.94
     merge_iou: float = 0.82
     min_rectangularity: float = 0.55
@@ -668,7 +669,20 @@ def contour_panel_candidates(arr: np.ndarray, cfg: PanelDetectionConfig) -> list
             rectangularity = polygon_area(poly) / max(1.0, bbox_area(bbox))
             if rectangularity < cfg.min_rectangularity:
                 continue
-            out.append({"bbox": bbox, "polygon": poly, "area": polygon_area(poly), "confidence": float(min(1.0, rectangularity)), "source": p["name"]})
+
+            circularity = 0.0
+            if peri > 0:
+                circularity = float((4.0 * np.pi * raw_area) / max(1.0, peri * peri))
+
+            out.append({
+                "bbox": bbox,
+                "polygon": poly,
+                "area": polygon_area(poly),
+                "confidence": float(min(1.0, rectangularity)),
+                "source": p["name"],
+                "rectangularity": float(rectangularity),
+                "circularity": circularity,
+            })
     return out
 
 
@@ -691,9 +705,95 @@ def merge_candidates(candidates: list[dict[str, Any]], cfg: PanelDetectionConfig
     return sorted(kept, key=lambda r: (r["bbox"][1], r["bbox"][0]))
 
 
+
+def reject_decorative_object_panels(candidates: list[dict[str, Any]], page_w: int, page_h: int) -> list[dict[str, Any]]:
+    """
+    Conservative filter for objects that contour detection mistakes for panels.
+
+    Example: a moon/planet/object inside a dark composition may have strong edges
+    and enough contrast, but it is not a frame. We only reject small-ish,
+    near-square, highly circular candidates so normal rectangular panels survive.
+    """
+    page_area = max(1.0, float(page_w * page_h))
+    kept: list[dict[str, Any]] = []
+
+    for cand in candidates:
+        bbox = cand.get("bbox", [0, 0, 0, 0])
+        x0, y0, x1, y1 = bbox
+        bw = max(1.0, x1 - x0)
+        bh = max(1.0, y1 - y0)
+        aspect = max(bw / bh, bh / bw)
+        area_ratio = bbox_area(bbox) / page_area
+        circularity = float(cand.get("circularity", 0.0) or 0.0)
+
+        looks_like_small_round_object = (
+            area_ratio < 0.18 and
+            aspect < 1.35 and
+            circularity > 0.78
+        )
+
+        if looks_like_small_round_object:
+            continue
+
+        kept.append(cand)
+
+    return kept
+
+
+def vertical_overlap_ratio(a: dict[str, Any], b: dict[str, Any]) -> float:
+    ax0, ay0, ax1, ay1 = a.get("bbox", [0, 0, 0, 0])
+    bx0, by0, bx1, by1 = b.get("bbox", [0, 0, 0, 0])
+    overlap = max(0.0, min(ay1, by1) - max(ay0, by0))
+    ah = max(1.0, ay1 - ay0)
+    bh = max(1.0, by1 - by0)
+    return overlap / min(ah, bh)
+
+
+def sort_candidates_row_aware(candidates: list[dict[str, Any]], reading_direction: str = "ltr") -> list[dict[str, Any]]:
+    """
+    Group panels into visual row bands first, then sort within each row.
+
+    This fixes the classic bug where a slightly taller/right panel gets numbered
+    before the left panel just because its y0 is a little higher.
+    """
+    if not candidates:
+        return candidates
+
+    direction = (reading_direction or "ltr").lower().strip()
+    if direction not in {"ltr", "rtl"}:
+        direction = "ltr"
+
+    rows: list[list[dict[str, Any]]] = []
+
+    for cand in sorted(candidates, key=lambda c: (c["bbox"][1], c["bbox"][0])):
+        best_row = None
+        best_score = 0.0
+
+        for row in rows:
+            score = max(vertical_overlap_ratio(cand, other) for other in row)
+            if score > best_score:
+                best_score = score
+                best_row = row
+
+        if best_row is not None and best_score >= 0.35:
+            best_row.append(cand)
+        else:
+            rows.append([cand])
+
+    rows.sort(key=lambda row: min(c["bbox"][1] for c in row))
+
+    ordered: list[dict[str, Any]] = []
+    for row in rows:
+        row.sort(
+            key=lambda c: (c["bbox"][0] + c["bbox"][2]) / 2.0,
+            reverse=(direction == "rtl"),
+        )
+        ordered.extend(row)
+
+    return ordered
+
+
 def name_panel(index: int, total: int) -> str:
-    if total == 3:
-        return ["top", "middle", "bottom"][index - 1]
     return f"panel_{index:02d}"
 
 
@@ -741,6 +841,14 @@ def detect_panel_regions(arr: np.ndarray, page_no: int, cfg: PanelDetectionConfi
             pad = max(2.0, min(w, h) * 0.004)
             bbox = [pad, pad, float(w) - pad, float(h) - pad]
             merged = [{"bbox": bbox, "polygon": bbox_xyxy_to_corners(bbox), "area": bbox_area(bbox), "confidence": 0.25, "source": "whole_page_rescue"}]
+    merged = reject_decorative_object_panels(merged, w, h)
+    if not merged and cfg.rescue_whole_page:
+        pad = max(2.0, min(w, h) * 0.004)
+        bbox = [pad, pad, float(w) - pad, float(h) - pad]
+        merged = [{"bbox": bbox, "polygon": bbox_xyxy_to_corners(bbox), "area": bbox_area(bbox), "confidence": 0.25, "source": "whole_page_rescue"}]
+
+    merged = sort_candidates_row_aware(merged, cfg.reading_direction)
+
     panels: list[PanelRegion] = []
     for i, cand in enumerate(merged, start=1):
         name = cand.get("manual_name") or name_panel(i, len(merged))
@@ -783,6 +891,20 @@ def svg_from_spatial_page(page_record: dict[str, Any], embed_panel_crops: bool, 
     out.append('<g id="page_reconstruction" class="page-reconstruction">')
     if href:
         out.append(f'<image id="page_background" class="page-background-object" href="{href}" x="0" y="0" width="{width}" height="{height}"/>')
+
+    reading_direction = html.escape(str(page_record.get("reading_direction", "ltr")).upper())
+    page_label = html.escape(f"PAGE {page_no} · {reading_direction}")
+    margin = max(12.0, min(width, height) * 0.012)
+    badge_x = margin
+    badge_y = margin
+    badge_w = max(190.0, len(page_label) * 15.0)
+    badge_h = 42.0
+    out.append(f'<rect id="page_bounds" class="page-bounds-object" x="1" y="1" width="{width-2}" height="{height-2}" fill="none" stroke="red" stroke-width="4" opacity="0.85"/>')
+    out.append(f'<g id="page_inspection_badge" class="page-inspection-badge">')
+    out.append(f'<rect id="page_inspection_badge_bg" x="{badge_x}" y="{badge_y}" width="{badge_w}" height="{badge_h}" rx="8" ry="8" fill="white" opacity="0.82" stroke="red" stroke-width="2"/>')
+    out.append(f'<text id="page_inspection_badge_text" x="{badge_x + 14}" y="{badge_y + 29}" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="red">{page_label}</text>')
+    out.append('</g>')
+
     out.append('</g>')
     out.append('<g id="panel_assets" class="panel-assets">')
     for panel in page_record.get("panels", []):
@@ -886,6 +1008,7 @@ def process_file(path: Path, out_root: Path, pdf_zoom: float, embed_panel_crops:
             "height": height,
             "coordinate_space": "rendered_page_pixels",
             "pdf_zoom": pdf_zoom if is_pdf else None,
+            "reading_direction": panel_cfg.reading_direction,
             "assets": {"page_image": page_saved},
             "panels": [asdict(p) for p in panels],
             "gutters": [asdict(g) for g in gutters],
@@ -926,6 +1049,7 @@ def main() -> None:
     parser.add_argument("--pdf-zoom", type=float, default=2.0, help="PDF render zoom. Try 1.5, 2, 3, or 4; different zooms produce different panel results")
     parser.add_argument("--panel-profile", default="balanced", choices=["strict", "balanced", "loose", "recall", "comic"], help="strict=fewer/cleaner, balanced=FileMonster-like, loose/recall=more aggressive")
     parser.add_argument("--panel-source", default="fallback", choices=["contours", "gutters", "fallback", "hybrid"], help="contours=FileMonster-style, gutters=gutter grid only, fallback=contours first, hybrid=both")
+    parser.add_argument("--reading-direction", default="ltr", choices=["ltr", "rtl"], help="Panel numbering direction inside each visual row")
     parser.add_argument("--max-area-ratio", type=float, default=0.94)
     parser.add_argument("--merge-iou", type=float, default=0.82)
     parser.add_argument("--min-rectangularity", type=float, default=0.55)
@@ -946,7 +1070,7 @@ def main() -> None:
     args = parser.parse_args()
 
     input_path = Path(args.input).expanduser().resolve(); out_root = Path(args.output_dir).expanduser().resolve(); out_root.mkdir(parents=True, exist_ok=True)
-    panel_cfg = PanelDetectionConfig(profile=args.panel_profile, panel_source=args.panel_source, max_area_ratio=args.max_area_ratio, merge_iou=args.merge_iou, min_rectangularity=args.min_rectangularity, min_width_ratio=args.min_width_ratio, min_height_ratio=args.min_height_ratio, max_aspect_ratio=args.max_aspect_ratio, min_ink_ratio=args.min_ink_ratio, rescue_whole_page=not args.no_rescue_whole_page)
+    panel_cfg = PanelDetectionConfig(profile=args.panel_profile, panel_source=args.panel_source, reading_direction=args.reading_direction, max_area_ratio=args.max_area_ratio, merge_iou=args.merge_iou, min_rectangularity=args.min_rectangularity, min_width_ratio=args.min_width_ratio, min_height_ratio=args.min_height_ratio, max_aspect_ratio=args.max_aspect_ratio, min_ink_ratio=args.min_ink_ratio, rescue_whole_page=not args.no_rescue_whole_page)
     manual = load_manual_panels(args.manual_panels)
     files = collect_inputs(input_path)
     if not files: raise SystemExit(f"No comic PDF/image files found: {input_path}")
