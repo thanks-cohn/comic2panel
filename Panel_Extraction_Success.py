@@ -696,7 +696,13 @@ def process_file(path: Path, out_root: Path, pdf_zoom: float, embed_panel_crops:
     for d in (panels_dir, svg_dir, spatial_dir, pages_dir): d.mkdir(parents=True, exist_ok=True)
     is_pdf = path.suffix.lower() in PDF_EXTS
     pages = render_pdf_pages(path, pdf_zoom) if is_pdf else [load_image_page(path)]
-    engine = get_paddle_engine(ocr_lang) if ocr_mode == "paddle" else None
+    engine = None
+    if ocr_mode == "paddle":
+        try:
+            engine = get_paddle_engine(ocr_lang)
+        except Exception as e:
+            print(f"[comica warning] PaddleOCR unavailable: {e}")
+            print("[comica warning] continuing without OCR; install optional OCR deps with: pip install -r requirements-ocr.txt")
     page_records: list[dict[str, Any]] = []
     total_pages = len(pages)
     print_progress(f"file {file_index}/{file_total} start", 0, max(1, total_pages), path.name)
@@ -732,7 +738,11 @@ def process_file(path: Path, out_root: Path, pdf_zoom: float, embed_panel_crops:
         for p in panels:
             crop = crop_region(arr, p.bbox)
             if crop is None: continue
-            crop_path = panels_dir / f"page_{page_no:04d}_{p.name}.png"
+            safe_work = "".join(c if c.isalnum() else "-" for c in path.stem.lower()).strip("-")
+            timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            panel_label = p.name.replace("panel_", "")
+            filename = f"{safe_work}-page_{page_no:04d}-panel_{panel_label}-{timestamp}.png"
+            crop_path = panels_dir / filename
             saved = save_png(crop, crop_path)
             p.crop_path = saved["path"]; p.crop_sha256 = saved["sha256"]; p.crop_size_bytes = saved["size_bytes"]
         page_record = {
